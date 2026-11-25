@@ -76,6 +76,13 @@ PROCESSED_COLUMNS: Tuple[str, ...] = (
     "iso_timestamp",
     "imu1_pitch_deg",
     "imu1_yaw_deg",
+    "shoulder_vision_ref_deg",
+    "shoulder_direction_sign",
+    "shoulder_dynamic_offset_deg",
+    "imu1_shoulder_corrected_deg",
+    "elbow_vision_ref_deg",
+    "elbow_direction_sign",
+    "elbow_dynamic_offset_deg",
     "imu1_elbow_deg",
     "imu2_pitch_trunk_deg",
     "shoulder_vision_deg",
@@ -128,12 +135,17 @@ def compute_consistency_metrics_table(processed_df: pd.DataFrame) -> pd.DataFram
     Note: Without an external optical motion-capture reference, these metrics
     measure inter-sensor consistency and filter agreement, NOT absolute accuracy.
     """
+    sh_imu_col = (
+        "imu1_shoulder_corrected_deg"
+        if "imu1_shoulder_corrected_deg" in processed_df.columns
+        else "imu1_pitch_deg"
+    )
     comparison_pairs = (
-        ("Shoulder", "Vision vs IMU 1 Pitch (Inter-Sensor Consistency)", "shoulder_vision_deg", "imu1_pitch_deg"),
-        ("Shoulder", "Shoulder UKF vs IMU 1 Pitch (Filter-to-IMU Agreement)", "shoulder_ukf_deg", "imu1_pitch_deg"),
+        ("Shoulder", "Vision vs IMU 1 Shoulder (Aligned Consistency)", "shoulder_vision_deg", sh_imu_col),
+        ("Shoulder", "Shoulder UKF vs IMU 1 Shoulder (Aligned Agreement)", "shoulder_ukf_deg", sh_imu_col),
         ("Shoulder", "Shoulder UKF vs Shoulder Vision (Filter-to-Vision Agreement)", "shoulder_ukf_deg", "shoulder_vision_deg"),
-        ("Elbow", "Vision vs IMU 1 Yaw+90 (Inter-Sensor Consistency)", "elbow_vision_deg", "imu1_elbow_deg"),
-        ("Elbow", "Elbow UKF vs IMU 1 Yaw+90 (Filter-to-IMU Agreement)", "elbow_ukf_deg", "imu1_elbow_deg"),
+        ("Elbow", "Vision vs IMU 1 Elbow (Aligned Consistency)", "elbow_vision_deg", "imu1_elbow_deg"),
+        ("Elbow", "Elbow UKF vs IMU 1 Elbow (Aligned Agreement)", "elbow_ukf_deg", "imu1_elbow_deg"),
         ("Elbow", "Elbow UKF vs Elbow Vision (Filter-to-Vision Agreement)", "elbow_ukf_deg", "elbow_vision_deg"),
     )
     total_rows = len(processed_df)
@@ -192,12 +204,13 @@ def compute_consistency_metrics_table(processed_df: pd.DataFrame) -> pd.DataFram
     # Single-channel descriptive statistics
     signal_columns = (
         ("Shoulder", "Shoulder Vision (deg)", "shoulder_vision_deg"),
-        ("Shoulder", "IMU 1 Pitch (deg)", "imu1_pitch_deg"),
+        ("Shoulder", "IMU 1 Pitch Raw Relative (deg)", "imu1_pitch_deg"),
+        ("Shoulder", "IMU 1 Shoulder Corrected (deg)", "imu1_shoulder_corrected_deg"),
         ("Shoulder", "Shoulder UKF (deg)", "shoulder_ukf_deg"),
         ("Shoulder", "Shoulder UKF K_angle (IMU)", "shoulder_k_imu_angle"),
         ("Shoulder", "Shoulder UKF K_angle (Vision)", "shoulder_k_vision_angle"),
         ("Elbow", "Elbow Vision (deg)", "elbow_vision_deg"),
-        ("Elbow", "IMU 1 Yaw + 90 (deg)", "imu1_elbow_deg"),
+        ("Elbow", "IMU 1 Elbow Corrected (deg)", "imu1_elbow_deg"),
         ("Elbow", "Elbow UKF (deg)", "elbow_ukf_deg"),
         ("Elbow", "Elbow UKF K_angle (IMU)", "elbow_k_imu_angle"),
         ("Elbow", "Elbow UKF K_angle (Vision)", "elbow_k_vision_angle"),
@@ -285,8 +298,12 @@ class SessionRecorder:
         iso_now = datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
         q1, q2 = sensor1.raw_quaternion, sensor2.raw_quaternion
 
-        sh_vis_imu, sh_abs_vis_imu = _signed_and_abs_diff(fusion.shoulder_vision_deg, fusion.imu1_pitch_deg)
-        sh_ukf_imu, sh_abs_ukf_imu = _signed_and_abs_diff(fusion.shoulder_ukf_deg, fusion.imu1_pitch_deg)
+        sh_vis_imu, sh_abs_vis_imu = _signed_and_abs_diff(
+            fusion.shoulder_vision_deg, fusion.imu1_shoulder_corrected_deg
+        )
+        sh_ukf_imu, sh_abs_ukf_imu = _signed_and_abs_diff(
+            fusion.shoulder_ukf_deg, fusion.imu1_shoulder_corrected_deg
+        )
         sh_ukf_vis, sh_abs_ukf_vis = _signed_and_abs_diff(fusion.shoulder_ukf_deg, fusion.shoulder_vision_deg)
         el_vis_imu, el_abs_vis_imu = _signed_and_abs_diff(fusion.elbow_vision_deg, fusion.imu1_elbow_deg)
         el_ukf_imu, el_abs_ukf_imu = _signed_and_abs_diff(fusion.elbow_ukf_deg, fusion.imu1_elbow_deg)
@@ -343,6 +360,13 @@ class SessionRecorder:
                 "iso_timestamp": iso_now,
                 "imu1_pitch_deg": fusion.imu1_pitch_deg,
                 "imu1_yaw_deg": fusion.imu1_yaw_deg,
+                "shoulder_vision_ref_deg": fusion.shoulder_vision_ref_deg,
+                "shoulder_direction_sign": fusion.shoulder_direction_sign,
+                "shoulder_dynamic_offset_deg": fusion.shoulder_dynamic_offset_deg,
+                "imu1_shoulder_corrected_deg": fusion.imu1_shoulder_corrected_deg,
+                "elbow_vision_ref_deg": fusion.elbow_vision_ref_deg,
+                "elbow_direction_sign": fusion.elbow_direction_sign,
+                "elbow_dynamic_offset_deg": fusion.elbow_dynamic_offset_deg,
                 "imu1_elbow_deg": fusion.imu1_elbow_deg,
                 "imu2_pitch_trunk_deg": fusion.imu2_pitch_deg,
                 "shoulder_vision_deg": fusion.shoulder_vision_deg,
@@ -410,8 +434,8 @@ class SessionRecorder:
                 settings_items.append({"Parameter": k, "Value": v})
 
         settings_items.extend([
-            {"Parameter": "fusion_assignment_shoulder", "Value": "IMU 1 Pitch + Shoulder Vision -> Shoulder UKF"},
-            {"Parameter": "fusion_assignment_elbow", "Value": "IMU 1 Yaw + 90.0 deg + Elbow Vision -> Elbow UKF (offset applied before UKF update)"},
+            {"Parameter": "fusion_assignment_shoulder", "Value": "Aligned IMU 1 Pitch (Vision_ref + sign * IMU_rel) + Shoulder Vision -> Shoulder UKF"},
+            {"Parameter": "fusion_assignment_elbow", "Value": "Aligned IMU 1 Yaw (Vision_ref + sign * IMU_rel) + Elbow Vision -> Elbow UKF"},
             {"Parameter": "fusion_assignment_trunk", "Value": "IMU 2 Pitch -> Trunk angle (unfused)"},
             {"Parameter": "axis_mapping_note", "Value": "Reported IMU Pitch = mathematical Roll; Reported IMU Yaw = mathematical Yaw; mathematical Pitch discarded."},
             {"Parameter": "missing_data_policy", "Value": "Missing measurements are preserved as empty/NaN cells without silent interpolation."},
@@ -427,6 +451,17 @@ class SessionRecorder:
             for num, ref_q in refs.items():
                 settings_items.append({"Parameter": f"sensor_{num}_reference_quaternion_wxyz", "Value": str(ref_q) if ref_q is not None else "Not calibrated"})
                 settings_items.append({"Parameter": f"sensor_{num}_calibration_sample_count", "Value": counts.get(num, 0)})
+            v_refs = calibration_manager.get_vision_references()
+            v_counts = calibration_manager.get_vision_sample_counts()
+            for joint in ("shoulder", "elbow"):
+                settings_items.append({
+                    "Parameter": f"{joint}_vision_reference_deg",
+                    "Value": v_refs[joint] if v_refs[joint] is not None else "Not calibrated / No valid Vision samples",
+                })
+                settings_items.append({
+                    "Parameter": f"{joint}_vision_calibration_sample_count",
+                    "Value": v_counts.get(joint, 0),
+                })
 
         if sensor_metadata:
             for num, meta in sensor_metadata.items():

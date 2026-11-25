@@ -119,6 +119,11 @@ class SessionAnalyzer:
             if t is None:
                 t = np.arange(len(processed_df), dtype=float)
 
+            sh_imu_col = (
+                "imu1_shoulder_corrected_deg"
+                if "imu1_shoulder_corrected_deg" in processed_df.columns
+                else "imu1_pitch_deg"
+            )
             plots["shoulder_angles"] = self._plot_joint_angles(
                 processed_df,
                 t,
@@ -126,8 +131,8 @@ class SessionAnalyzer:
                 joint_name="Shoulder",
                 vision_col="shoulder_vision_deg",
                 vision_label="Shoulder Vision (MediaPipe)",
-                imu_col="imu1_pitch_deg",
-                imu_label="IMU 1 Pitch (Calibrated)",
+                imu_col=sh_imu_col,
+                imu_label="IMU 1 Shoulder (Aligned)",
                 ukf_col="shoulder_ukf_deg",
                 ukf_label="Shoulder UKF (Fused)",
             )
@@ -139,7 +144,7 @@ class SessionAnalyzer:
                 vision_col="elbow_vision_deg",
                 vision_label="Elbow Vision (MediaPipe)",
                 imu_col="imu1_elbow_deg",
-                imu_label="IMU 1 Yaw + 90° (Calibrated)",
+                imu_label="IMU 1 Elbow (Aligned)",
                 ukf_col="elbow_ukf_deg",
                 ukf_label="Elbow UKF (Fused)",
             )

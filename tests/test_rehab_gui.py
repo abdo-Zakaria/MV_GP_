@@ -91,17 +91,33 @@ class TestRehabGUI(unittest.TestCase):
             self.assertFalse(dash.start_exp_btn.isEnabled())
 
             # Complete calibration window (t = 101.2 s and t = 102.1 s >= 2.0 s)
+            # Capture Vision references during the neutral calibration window (20 deg shoulder, 90 deg elbow)
             for ts in (t0 + 1.2, t0 + 1.6, t0 + 2.1):
                 controller.sensor_manager.inject_quaternion_sample(1, q0, timestamp=ts)
                 controller.sensor_manager.inject_quaternion_sample(2, q0, timestamp=ts)
+                controller.step_session(
+                    timestamp=ts,
+                    vision_measurement=VisionMeasurement(
+                        timestamp=ts,
+                        pose_detected=True,
+                        shoulder_angle_deg=20.0,
+                        elbow_angle_deg=90.0,
+                        posture_status="START POSITION (Ready)",
+                    ),
+                )
             window._refresh_ui()
 
             self.assertTrue(controller.get_sensor_status()["is_calibrated"])
             self.assertTrue(dash.start_exp_btn.isEnabled())
             self.assertEqual(dash.calibration_progress.value(), 100)
+            self.assertAlmostEqual(controller.get_sensor_status()["vision_references"]["shoulder"], 20.0, places=6)
+            self.assertAlmostEqual(controller.get_sensor_status()["vision_references"]["elbow"], 90.0, places=6)
 
             # Feed an active sample and a synthetic camera frame and verify UI cards update
-            q1 = _euler_deg_to_quaternion(roll_deg=55.0, pitch_deg=10.0, yaw_deg=35.0)
+            # With direction_sign = -1.0:
+            # Shoulder aligned = 20.0 + (-1.0) * (-35.0) = +55.0 deg
+            # Elbow aligned    = 90.0 + (-1.0) * (-35.0) = +125.0 deg
+            q1 = _euler_deg_to_quaternion(roll_deg=-35.0, pitch_deg=10.0, yaw_deg=-35.0)
             q2 = _euler_deg_to_quaternion(roll_deg=12.0, pitch_deg=0.0, yaw_deg=0.0)
             controller.sensor_manager.inject_quaternion_sample(1, q1, timestamp=t0 + 2.5)
             controller.sensor_manager.inject_quaternion_sample(2, q2, timestamp=t0 + 2.5)
@@ -126,9 +142,99 @@ class TestRehabGUI(unittest.TestCase):
             window._refresh_ui()
 
             self.assertIn("+54.0", dash.row_shoulder_vision.value_label.text())
+            self.assertEqual(dash.row_imu1_pitch.title_label.text(), "IMU 1 Pitch (Aligned)")
+            self.assertIn("+55.0", dash.row_imu1_pitch.value_label.text())
             self.assertIn("+126.0", dash.row_elbow_vision.value_label.text())
+            self.assertIn("+125.0", dash.row_imu1_elbow.value_label.text())
             self.assertIn("+12.0", dash.row_trunk_pitch.value_label.text())
             self.assertIsNotNone(dash.video_label.pixmap())
+
+            window.close()
+
+    def test_main_and_gui_produce_identical_calibration_alignment_and_ukf_results(self) -> None:
+        """Verify main.py and gui_main.py controllers produce identical results under identical inputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_controller = RehabApplicationController(
+                RehabConfig(
+                    warmup_seconds=1.0,
+                    calibration_seconds=1.0,
+                    recordings_dir=Path(tmpdir) / "cli",
+                    show_opencv_window=True,
+                    enable_sensors=False,
+                    enable_vision=False,
+                )
+            )
+            gui_controller = RehabApplicationController(
+                RehabConfig(
+                    warmup_seconds=1.0,
+                    calibration_seconds=1.0,
+                    recordings_dir=Path(tmpdir) / "gui",
+                    show_opencv_window=False,
+                    enable_sensors=False,
+                    enable_vision=False,
+                )
+            )
+            window = RehabMainWindow(controller=gui_controller, start_in_simulation_mode=True)
+            window._is_connected = True
+
+            t0 = 500.0
+            cli_controller.calibration_manager.start(t0)
+            gui_controller.calibration_manager.start(t0)
+            q_neutral = _euler_deg_to_quaternion(0.0, 0.0, 0.0)
+
+            # Stage 1 (warm-up) & Stage 2 (neutral calibration)
+            for dt in (0.4, 1.2, 1.6, 2.05):
+                ts = t0 + dt
+                vis = VisionMeasurement(ts, True, shoulder_angle_deg=15.0, elbow_angle_deg=92.0)
+                for ctrl in (cli_controller, gui_controller):
+                    ctrl.sensor_manager.inject_quaternion_sample(1, q_neutral, timestamp=ts)
+                    ctrl.sensor_manager.inject_quaternion_sample(2, q_neutral, timestamp=ts)
+                    ctrl.step_session(timestamp=ts, vision_measurement=vis)
+
+            self.assertEqual(
+                cli_controller.calibration_manager.get_vision_references(),
+                gui_controller.calibration_manager.get_vision_references(),
+            )
+
+            # Stage 3: continuous varying IMU + Vision updates
+            prev_sh_corr = None
+            for idx, (sh_rel, el_rel, trk) in enumerate([(-10.0, -15.0, 4.0), (-25.0, -30.0, 7.0), (-40.0, -45.0, 10.0)]):
+                ts = t0 + 2.5 + idx * 0.5
+                q1 = _euler_deg_to_quaternion(roll_deg=sh_rel, pitch_deg=5.0, yaw_deg=el_rel)
+                q2 = _euler_deg_to_quaternion(roll_deg=trk, pitch_deg=0.0, yaw_deg=0.0)
+                vis = VisionMeasurement(
+                    ts,
+                    True,
+                    shoulder_angle_deg=15.0 - sh_rel,
+                    elbow_angle_deg=92.0 - el_rel,
+                )
+                for ctrl in (cli_controller, gui_controller):
+                    ctrl.sensor_manager.inject_quaternion_sample(1, q1, timestamp=ts)
+                    ctrl.sensor_manager.inject_quaternion_sample(2, q2, timestamp=ts)
+                    ctrl.step_session(timestamp=ts, vision_measurement=vis)
+
+                window._refresh_ui()
+                cli_m = cli_controller.get_current_measurements()
+                gui_m = gui_controller.get_current_measurements()
+
+                for key in (
+                    "imu1_pitch_deg",
+                    "imu1_yaw_deg",
+                    "imu1_shoulder_corrected_deg",
+                    "imu1_elbow_deg",
+                    "shoulder_ukf_deg",
+                    "elbow_ukf_deg",
+                    "trunk_angle_deg",
+                ):
+                    self.assertAlmostEqual(cli_m[key], gui_m[key], places=9)
+
+                # Confirm Shoulder corrected IMU moves continuously upward with Shoulder Vision
+                if prev_sh_corr is not None:
+                    self.assertGreater(gui_m["imu1_shoulder_corrected_deg"], prev_sh_corr)
+                prev_sh_corr = gui_m["imu1_shoulder_corrected_deg"]
+
+                # Confirm GUI card displays the aligned Shoulder IMU value
+                self.assertIn(f"{gui_m['imu1_shoulder_corrected_deg']:+6.1f}", window.dashboard_tab.row_imu1_pitch.value_label.text())
 
             window.close()
 

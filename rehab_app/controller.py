@@ -30,7 +30,7 @@ import cv2
 from rehab_app.analysis import AnalysisResult, SessionAnalyzer
 from rehab_app.calibration import CalibrationManager
 from rehab_app.config import RehabConfig
-from rehab_app.fusion import AngleUKF, JointFusionPipeline
+from rehab_app.fusion import AngleUKF, JointFusionPipeline, align_imu_angle
 from rehab_app.recording import SessionRecorder
 from rehab_app.sensors import DelsysSensorManager
 from rehab_app.vision import PoseVisionProcessor, VisionMeasurement, draw_overlay, fmt
@@ -109,6 +109,8 @@ class RehabApplicationController:
             shoulder_ukf=self._make_ukf(),
             elbow_ukf=self._make_ukf(),
             elbow_imu_offset_deg=c.elbow_imu_offset_deg,
+            shoulder_direction_sign=c.shoulder_imu_direction_sign,
+            elbow_direction_sign=c.elbow_imu_direction_sign,
         )
         self.recorder = SessionRecorder(config=c)
         self.analyzer = SessionAnalyzer()
@@ -243,6 +245,11 @@ class RehabApplicationController:
         """
         s1 = self.sensor_manager.get_reading_snapshot(1, now=timestamp)
         s2 = self.sensor_manager.get_reading_snapshot(2, now=timestamp)
+        vision_refs = self.calibration_manager.record_vision_sample(
+            vision_measurement.shoulder_angle_deg,
+            vision_measurement.elbow_angle_deg,
+            timestamp=timestamp,
+        )
 
         fusion_res = self.fusion_pipeline.step(
             timestamp=timestamp,
@@ -251,6 +258,8 @@ class RehabApplicationController:
             imu2_pitch=s2.pitch if s2.ready else None,
             shoulder_vision=vision_measurement.shoulder_angle_deg,
             elbow_vision=vision_measurement.elbow_angle_deg,
+            shoulder_vision_ref=vision_refs["shoulder"],
+            elbow_vision_ref=vision_refs["elbow"],
         )
         status_dict = self.sensor_manager.get_status()
         proc_row = self.recorder.record_step(
@@ -280,6 +289,7 @@ class RehabApplicationController:
             "sensor": base_status["sensor"],
             "calibration": base_status["calibration"],
             "is_calibrated": self.calibration_manager.is_fully_calibrated,
+            "vision_references": self.calibration_manager.get_vision_references(),
             "vision": vis_status,
             "recorded_samples": self.recorder.sample_count,
             "sensors_metadata": self.sensor_manager.get_sensor_metadata(),
@@ -294,13 +304,19 @@ class RehabApplicationController:
         p1 = self.sensor_manager.get_sensor(1, "pitch", now=now)
         y1 = self.sensor_manager.get_sensor(1, "yaw", now=now)
         p2 = self.sensor_manager.get_sensor(2, "pitch", now=now)
+        v_refs = self.calibration_manager.get_vision_references()
+        sh_corr = align_imu_angle(p1, v_refs["shoulder"], self.config.shoulder_imu_direction_sign)
+        el_corr = align_imu_angle(y1, v_refs["elbow"], self.config.elbow_imu_direction_sign)
         return {
             "timestamp": None,
             "elapsed_s": 0.0,
             "imu1_pitch_deg": p1,
             "imu1_yaw_deg": y1,
-            "imu1_elbow_deg": (y1 + self.config.elbow_imu_offset_deg) if y1 is not None else None,
+            "imu1_shoulder_corrected_deg": sh_corr,
+            "imu1_elbow_deg": el_corr,
             "imu2_pitch_trunk_deg": p2,
+            "shoulder_vision_ref_deg": v_refs["shoulder"],
+            "elbow_vision_ref_deg": v_refs["elbow"],
             "shoulder_vision_deg": None,
             "elbow_vision_deg": None,
             "shoulder_ukf_deg": None,
@@ -389,16 +405,26 @@ class RehabApplicationController:
 
                 if self.config.show_opencv_window and annotated is not None:
                     h, w = annotated.shape[:2]
-                    lines = [
-                        f"Shoulder Vision: {fmt(rec['shoulder_vision_deg'])}",
-                        f"IMU 1 Pitch: {fmt(rec['imu1_pitch_deg'])}",
-                        f"Shoulder UKF: {fmt(rec['shoulder_ukf_deg'])}",
-                        f"Elbow Vision: {fmt(rec['elbow_vision_deg'])}",
-                        f"IMU 1 Yaw: {fmt(rec['imu1_yaw_deg'])}",
-                        f"Elbow UKF: {fmt(rec['elbow_ukf_deg'])}",
-                        f"IMU 2 Pitch / Trunk: {fmt(rec['trunk_angle_deg'])}",
-                        f"Calibration: {rec['calibration_status']}",
-                    ]
+                    if not self.calibration_manager.is_fully_calibrated:
+                        lines = [
+                            f"Shoulder Vision: {fmt(rec['shoulder_vision_deg'])}",
+                            f"IMU 1 Pitch (Raw): {fmt(rec['imu1_pitch_deg'])}",
+                            f"Elbow Vision: {fmt(rec['elbow_vision_deg'])}",
+                            f"IMU 1 Yaw (Raw): {fmt(rec['imu1_yaw_deg'])}",
+                            f"IMU 2 Pitch / Trunk: {fmt(rec['trunk_angle_deg'])}",
+                            f"Calibration: {rec['calibration_status']}",
+                        ]
+                    else:
+                        lines = [
+                            f"Shoulder Vision: {fmt(rec['shoulder_vision_deg'])}",
+                            f"IMU 1 Pitch (Aligned): {fmt(rec['imu1_shoulder_corrected_deg'])}",
+                            f"Shoulder UKF: {fmt(rec['shoulder_ukf_deg'])}",
+                            f"Elbow Vision: {fmt(rec['elbow_vision_deg'])}",
+                            f"IMU 1 Yaw (Aligned): {fmt(rec['imu1_elbow_deg'])}",
+                            f"Elbow UKF: {fmt(rec['elbow_ukf_deg'])}",
+                            f"IMU 2 Pitch / Trunk: {fmt(rec['trunk_angle_deg'])}",
+                            f"Calibration: {rec['calibration_status']}",
+                        ]
                     draw_overlay(annotated, lines)
                     cv2.putText(
                         annotated,

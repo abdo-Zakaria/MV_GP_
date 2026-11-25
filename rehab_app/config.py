@@ -23,7 +23,9 @@ WARMUP_SECONDS: float = 30.0
 CALIBRATION_SECONDS: float = 5.0
 ZERO_DEADBAND_DEG: float = 2.0
 SENSOR_STALE_SECONDS: float = 1.0
-ELBOW_IMU_OFFSET_DEG: float = 90.0
+ELBOW_IMU_OFFSET_DEG: float = 0.0
+SHOULDER_IMU_DIRECTION_SIGN: float = -1.0
+ELBOW_IMU_DIRECTION_SIGN: float = -1.0
 
 # ---------------- Default Vision / MediaPipe Settings ----------------
 CAMERA_INDEX: int = 0
@@ -64,6 +66,8 @@ class RehabConfig:
     sensor_stale_seconds: float = SENSOR_STALE_SECONDS
     zero_deadband_deg: float = ZERO_DEADBAND_DEG
     elbow_imu_offset_deg: float = ELBOW_IMU_OFFSET_DEG
+    shoulder_imu_direction_sign: float = SHOULDER_IMU_DIRECTION_SIGN
+    elbow_imu_direction_sign: float = ELBOW_IMU_DIRECTION_SIGN
 
     # Camera and MediaPipe settings
     camera_index: int = CAMERA_INDEX
@@ -121,6 +125,10 @@ class RehabConfig:
             raise ValueError("sensor_stale_seconds must be positive.")
         if self.zero_deadband_deg < 0:
             raise ValueError("zero_deadband_deg must be non-negative.")
+        if self.shoulder_imu_direction_sign not in (-1.0, 1.0):
+            raise ValueError("shoulder_imu_direction_sign must be +1.0 or -1.0.")
+        if self.elbow_imu_direction_sign not in (-1.0, 1.0):
+            raise ValueError("elbow_imu_direction_sign must be +1.0 or -1.0.")
         if not (0.0 <= self.visibility_min <= 1.0):
             raise ValueError("visibility_min must be between 0.0 and 1.0.")
         if not (0.0 < self.landmark_alpha <= 1.0):

@@ -17,8 +17,8 @@ clr.AddReference("System.Collections")
 
 from Aero import AeroPy  # type: ignore[reportMissingImports]  # Provided by the DelsysAPI .NET assembly.
 # from Aero
-key = ''
-license = '';
+key = ""
+license = ""
 class TrignoType(Enum):
     LITE = 0
     CENTRO = 1

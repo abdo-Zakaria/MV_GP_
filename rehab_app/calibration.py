@@ -161,18 +161,27 @@ class CalibrationManager:
         self._calibrated: Dict[int, bool] = {n: False for n in self.sensor_numbers}
         self._status_text: str = "Waiting"
 
+        # Dynamic Vision reference angles captured during the same neutral calibration window
+        self._vision_samples: Dict[str, List[float]] = {"shoulder": [], "elbow": []}
+        self._vision_refs: Dict[str, Optional[float]] = {"shoulder": None, "elbow": None}
+        self._vision_finalized: Dict[str, bool] = {"shoulder": False, "elbow": False}
+
     def start(self, start_timestamp: float) -> None:
         """Start or restart the warm-up and calibration timer at start_timestamp."""
         self.reset(new_start_timestamp=start_timestamp)
 
     def reset(self, new_start_timestamp: Optional[float] = None) -> None:
-        """Clear saved reference quaternions and calibration samples."""
+        """Clear saved reference quaternions, Vision references, and calibration samples."""
         with self._lock:
             self._start_time = float(new_start_timestamp) if new_start_timestamp is not None else None
             for n in list(self._samples):
                 self._samples[n].clear()
                 self._refs[n] = None
                 self._calibrated[n] = False
+            for joint in ("shoulder", "elbow"):
+                self._vision_samples[joint].clear()
+                self._vision_refs[joint] = None
+                self._vision_finalized[joint] = False
             self._status_text = (
                 f"Warm-up {self.warmup_seconds:.0f} s" if self._start_time is not None else "Waiting"
             )
@@ -193,6 +202,78 @@ class CalibrationManager:
     def get_sample_counts(self) -> Dict[int, int]:
         with self._lock:
             return {n: len(s) for n, s in self._samples.items()}
+
+    def get_vision_references(self) -> Dict[str, Optional[float]]:
+        """Return averaged Vision reference angles {'shoulder': float|None, 'elbow': float|None}."""
+        with self._lock:
+            return dict(self._vision_refs)
+
+    def get_vision_sample_counts(self) -> Dict[str, int]:
+        """Return number of valid Vision samples collected for each joint during calibration."""
+        with self._lock:
+            return {joint: len(samples) for joint, samples in self._vision_samples.items()}
+
+    def record_vision_sample(
+        self,
+        shoulder_angle_deg: Optional[float],
+        elbow_angle_deg: Optional[float],
+        timestamp: float,
+    ) -> Dict[str, Optional[float]]:
+        """
+        Capture and average Shoulder and Elbow Vision angles during the calibration window.
+        - During warm-up (elapsed < warmup_seconds): samples are ignored.
+        - During calibration (warmup_seconds <= elapsed < warmup_seconds + calibration_seconds):
+          valid finite angles are appended independently for shoulder and elbow.
+        - Once elapsed >= warmup_seconds + calibration_seconds: each joint's reference is
+          finalized as the arithmetic mean of its valid samples (or None if none were valid).
+        """
+        with self._lock:
+            if self._start_time is None:
+                return dict(self._vision_refs)
+
+            elapsed = float(timestamp) - self._start_time
+            total_cal_time = self.warmup_seconds + self.calibration_seconds
+
+            if elapsed < self.warmup_seconds:
+                return dict(self._vision_refs)
+
+            joint_values = {
+                "shoulder": shoulder_angle_deg,
+                "elbow": elbow_angle_deg,
+            }
+            for joint, val in joint_values.items():
+                if self._vision_finalized[joint]:
+                    continue
+                if val is not None and math.isfinite(float(val)):
+                    self._vision_samples[joint].append(float(val))
+                if elapsed >= total_cal_time:
+                    self._finalize_vision_joint_locked(joint)
+
+            return dict(self._vision_refs)
+
+    def _finalize_vision_joint_locked(self, joint: str) -> None:
+        """Finalize the Vision reference angle for `joint` at the end of calibration."""
+        if self._vision_finalized[joint]:
+            return
+        samples = self._vision_samples[joint]
+        if samples:
+            ref_deg = float(np.mean(samples))
+            self._vision_refs[joint] = ref_deg
+            logger.info(
+                "Vision %s calibration reference finalized: %.2f deg (%d valid samples).",
+                joint,
+                ref_deg,
+                len(samples),
+            )
+        else:
+            self._vision_refs[joint] = None
+            logger.warning(
+                "Vision %s calibration finished with 0 valid samples; "
+                "dynamic IMU offset alignment for %s is unavailable.",
+                joint,
+                joint,
+            )
+        self._vision_finalized[joint] = True
 
     def process_quaternion(
         self,
@@ -234,10 +315,11 @@ class CalibrationManager:
                     phase="warmup",
                 )
 
-            # Step 2: Neutral calibration sample collection phase
+            # Step 2: Neutral calibration sample collection phase (matches modes.py)
             if not self._calibrated[sensor_number]:
                 self._samples[sensor_number].append(q)
-                if elapsed >= total_cal_time:
+                calibration_elapsed = elapsed - self.warmup_seconds
+                if calibration_elapsed >= self.calibration_seconds:
                     ref_q = average_quaternions(self._samples[sensor_number])
                     if ref_q is None:
                         raise RuntimeError(f"Sensor {sensor_number}: calibration failed.")
@@ -248,18 +330,19 @@ class CalibrationManager:
                         sensor_number,
                         len(self._samples[sensor_number]),
                     )
-                self._update_status_locked(elapsed, total_cal_time)
-                is_cal = self._calibrated[sensor_number]
-                return CalibratedOrientation(
-                    sensor_number=sensor_number,
-                    timestamp=float(timestamp),
-                    raw_quaternion=q,
-                    is_calibrated=is_cal,
-                    phase="calibrated_init" if is_cal else "calibrating",
-                    reference_quaternion=self._refs[sensor_number],
-                )
+                if not self._calibrated[sensor_number]:
+                    self._update_status_locked(elapsed, total_cal_time)
+                    return CalibratedOrientation(
+                        sensor_number=sensor_number,
+                        timestamp=float(timestamp),
+                        raw_quaternion=q,
+                        is_calibrated=False,
+                        phase="calibrating",
+                        reference_quaternion=None,
+                    )
 
-            # Step 3: Active calibrated measurement phase
+            # Step 3: Active calibrated measurement phase (falls through immediately
+            # once calibration completes, matching `if calibration_complete:` in modes.py)
             ref = self._refs[sensor_number]
             assert ref is not None
             relative = normalize(q_multiply(q_conjugate(ref), q))

@@ -14,6 +14,7 @@ rehab_vision_delsys_ukf_Final.py:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import math
 from typing import Dict, Optional, Tuple
 
@@ -21,6 +22,7 @@ import numpy as np
 
 from rehab_app.calibration import wrap_deg
 from rehab_app.config import (
+    ELBOW_IMU_DIRECTION_SIGN,
     ELBOW_IMU_OFFSET_DEG,
     INITIAL_P_ANGLE,
     INITIAL_P_VELOCITY,
@@ -28,10 +30,32 @@ from rehab_app.config import (
     Q_VELOCITY,
     R_IMU,
     R_VISION,
+    SHOULDER_IMU_DIRECTION_SIGN,
     UKF_ALPHA,
     UKF_BETA,
     UKF_KAPPA,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def align_imu_angle(
+    imu_relative: Optional[float],
+    vision_reference: Optional[float],
+    direction_sign: float = 1.0,
+) -> Optional[float]:
+    """
+    Align a neutral-calibrated relative IMU angle to the Vision reference frame:
+        IMU_corrected = Vision_reference + direction_sign * IMU_relative
+
+    Returns None if either `imu_relative` or `vision_reference` is missing or non-finite,
+    so an invalid reference is never silently applied.
+    """
+    if imu_relative is None or vision_reference is None:
+        return None
+    if not (math.isfinite(imu_relative) and math.isfinite(vision_reference)):
+        return None
+    return float(vision_reference + float(direction_sign) * float(imu_relative))
 
 
 def angle_residual(a: float, b: float) -> float:
@@ -310,6 +334,7 @@ class FusionStepResult:
     timestamp: float
     imu1_pitch_deg: Optional[float]
     imu1_yaw_deg: Optional[float]
+    imu1_shoulder_corrected_deg: Optional[float]
     imu1_elbow_deg: Optional[float]
     imu2_pitch_deg: Optional[float]
     shoulder_vision_deg: Optional[float]
@@ -319,6 +344,12 @@ class FusionStepResult:
     elbow_ukf_deg: Optional[float]
     elbow_ukf_velocity_deg_s: Optional[float]
     trunk_angle_deg: Optional[float]
+    shoulder_vision_ref_deg: Optional[float] = None
+    elbow_vision_ref_deg: Optional[float] = None
+    shoulder_direction_sign: float = SHOULDER_IMU_DIRECTION_SIGN
+    elbow_direction_sign: float = ELBOW_IMU_DIRECTION_SIGN
+    shoulder_dynamic_offset_deg: Optional[float] = None
+    elbow_dynamic_offset_deg: Optional[float] = None
     shoulder_k_imu: Optional[np.ndarray] = None
     shoulder_k_vision: Optional[np.ndarray] = None
     elbow_k_imu: Optional[np.ndarray] = None
@@ -328,6 +359,8 @@ class FusionStepResult:
 class JointFusionPipeline:
     """
     Coordinates the two UKF filters (Shoulder and Elbow) and the unfused Trunk angle.
+    Applies dynamic Vision-reference IMU offset alignment before each UKF update:
+        IMU_corrected = Vision_reference + direction_sign * IMU_relative
     """
 
     def __init__(
@@ -335,10 +368,14 @@ class JointFusionPipeline:
         shoulder_ukf: Optional[AngleUKF] = None,
         elbow_ukf: Optional[AngleUKF] = None,
         elbow_imu_offset_deg: float = ELBOW_IMU_OFFSET_DEG,
+        shoulder_direction_sign: float = SHOULDER_IMU_DIRECTION_SIGN,
+        elbow_direction_sign: float = ELBOW_IMU_DIRECTION_SIGN,
     ) -> None:
         self.shoulder_ukf = shoulder_ukf if shoulder_ukf is not None else initialize_shoulder_ukf()
         self.elbow_ukf = elbow_ukf if elbow_ukf is not None else initialize_elbow_ukf()
         self.elbow_imu_offset_deg = float(elbow_imu_offset_deg)
+        self.shoulder_direction_sign = float(shoulder_direction_sign)
+        self.elbow_direction_sign = float(elbow_direction_sign)
 
     def reset(self) -> None:
         """Reset both Shoulder and Elbow UKFs."""
@@ -353,11 +390,14 @@ class JointFusionPipeline:
         imu2_pitch: Optional[float],
         shoulder_vision: Optional[float],
         elbow_vision: Optional[float],
+        shoulder_vision_ref: Optional[float] = None,
+        elbow_vision_ref: Optional[float] = None,
     ) -> FusionStepResult:
         """
         Run one fusion step at `timestamp`:
-        1. IMU 1 Pitch + Shoulder Vision -> Shoulder UKF
-        2. (IMU 1 Yaw + 90 deg) + Elbow Vision -> Elbow UKF
+        1. Align IMU 1 Pitch using Shoulder Vision reference and direction sign -> Shoulder UKF
+        2. Align IMU 1 Yaw using Elbow Vision reference and direction sign -> Elbow UKF
+           (Replaces any hardcoded static 90 deg offset so it is never applied twice.)
         3. IMU 2 Pitch -> Trunk angle (without fusion)
         """
         self.shoulder_ukf.last_kalman_gain_by_source["imu"] = None
@@ -365,24 +405,68 @@ class JointFusionPipeline:
         self.elbow_ukf.last_kalman_gain_by_source["imu"] = None
         self.elbow_ukf.last_kalman_gain_by_source["vision"] = None
 
+        # Dynamic offset alignment for Shoulder:
+        # IMU_shoulder_corrected = shoulder_vision_ref + shoulder_direction_sign * imu1_pitch
+        shoulder_imu_corrected = align_imu_angle(
+            imu1_pitch, shoulder_vision_ref, self.shoulder_direction_sign
+        )
+        shoulder_dynamic_offset = (
+            float(shoulder_vision_ref)
+            if (shoulder_vision_ref is not None and math.isfinite(shoulder_vision_ref))
+            else None
+        )
+
+        # Dynamic offset alignment for Elbow:
+        # IMU_elbow_corrected = elbow_vision_ref + elbow_direction_sign * imu1_yaw
+        # Note: elbow_vision_ref already captures the true calibration pose angle,
+        # so no static +90 deg offset is added on top.
+        elbow_imu_corrected = align_imu_angle(
+            imu1_yaw, elbow_vision_ref, self.elbow_direction_sign
+        )
+        elbow_dynamic_offset = (
+            float(elbow_vision_ref)
+            if (elbow_vision_ref is not None and math.isfinite(elbow_vision_ref))
+            else None
+        )
+
         shoulder_fused = fuse_shoulder_angle(
-            self.shoulder_ukf, imu1_pitch, shoulder_vision, timestamp
+            self.shoulder_ukf, shoulder_imu_corrected, shoulder_vision, timestamp
         )
         elbow_fused = fuse_elbow_angle(
             self.elbow_ukf,
-            imu1_yaw,
+            elbow_imu_corrected,
             elbow_vision,
             timestamp,
-            elbow_offset_deg=self.elbow_imu_offset_deg,
+            elbow_offset_deg=0.0,
         )
-        imu1_elbow = (imu1_yaw + self.elbow_imu_offset_deg) if imu1_yaw is not None else None
         trunk_angle = float(imu2_pitch) if imu2_pitch is not None else None
+
+        if logger.isEnabledFor(logging.DEBUG):
+            sh_diff = (
+                angle_residual(shoulder_vision, shoulder_imu_corrected)
+                if (shoulder_vision is not None and shoulder_imu_corrected is not None)
+                else None
+            )
+            el_diff = (
+                angle_residual(elbow_vision, elbow_imu_corrected)
+                if (elbow_vision is not None and elbow_imu_corrected is not None)
+                else None
+            )
+            logger.debug(
+                "Alignment [Shoulder] vis=%s ref=%s imu_rel=%s sign=%+.0f offset=%s imu_corr=%s diff=%s | "
+                "[Elbow] vis=%s ref=%s imu_rel=%s sign=%+.0f offset=%s imu_corr=%s diff=%s",
+                shoulder_vision, shoulder_vision_ref, imu1_pitch, self.shoulder_direction_sign,
+                shoulder_dynamic_offset, shoulder_imu_corrected, sh_diff,
+                elbow_vision, elbow_vision_ref, imu1_yaw, self.elbow_direction_sign,
+                elbow_dynamic_offset, elbow_imu_corrected, el_diff,
+            )
 
         return FusionStepResult(
             timestamp=float(timestamp),
             imu1_pitch_deg=imu1_pitch,
             imu1_yaw_deg=imu1_yaw,
-            imu1_elbow_deg=imu1_elbow,
+            imu1_shoulder_corrected_deg=shoulder_imu_corrected,
+            imu1_elbow_deg=elbow_imu_corrected,
             imu2_pitch_deg=imu2_pitch,
             shoulder_vision_deg=shoulder_vision,
             elbow_vision_deg=elbow_vision,
@@ -395,6 +479,12 @@ class JointFusionPipeline:
                 float(self.elbow_ukf.x[1]) if self.elbow_ukf.initialized else None
             ),
             trunk_angle_deg=trunk_angle,
+            shoulder_vision_ref_deg=shoulder_vision_ref,
+            elbow_vision_ref_deg=elbow_vision_ref,
+            shoulder_direction_sign=self.shoulder_direction_sign,
+            elbow_direction_sign=self.elbow_direction_sign,
+            shoulder_dynamic_offset_deg=shoulder_dynamic_offset,
+            elbow_dynamic_offset_deg=elbow_dynamic_offset,
             shoulder_k_imu=self.shoulder_ukf.last_kalman_gain_by_source["imu"],
             shoulder_k_vision=self.shoulder_ukf.last_kalman_gain_by_source["vision"],
             elbow_k_imu=self.elbow_ukf.last_kalman_gain_by_source["imu"],

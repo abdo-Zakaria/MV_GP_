@@ -1,222 +1,221 @@
-<<<<<<< HEAD
-# Upper-Limb Rehabilitation Application (MediaPipe Vision + Delsys Trigno IMUs + UKF Fusion + PySide6 GUI)
+# 🦾 Active Upper-Limb Rehabilitation System (MediaPipe Vision + Delsys Trigno IMUs + UKF Fusion)
 
-This project is a modular, class-based Python rehabilitation monitoring and data-acquisition application. It combines **MediaPipe Pose** computer vision with **Delsys Trigno** wireless orientation sensors (`OR 16 bits (74 Hz)` quaternion streaming), performs **30 s warm-up + 5 s neutral quaternion calibration**, fuses upper-limb joint angles in real time using **Unscented Kalman Filters (UKFs)**, records every session into a **4-sheet Excel workbook**, and generates **post-experiment comparison metrics and diagnostic plots**.
+![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![GUI PySide6](https://img.shields.io/badge/GUI-PySide6-0284C7)
+![Vision MediaPipe](https://img.shields.io/badge/Vision-MediaPipe%20Pose-0097A7)
+![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6)
+![License Delsys API](https://img.shields.io/badge/License-Delsys%20API-475569)
 
-It can be operated through either the **PySide6 Graphical User Interface (`gui_main.py`)** or the **Command-Line Interface (`main.py`)**.
+A modular Python rehabilitation monitoring, sensor-fusion, and recording application combining **MediaPipe Pose** computer vision with **Delsys Trigno** wireless orientation sensors (`OR 16 bits (74 Hz)` quaternion streaming).
+
+The system performs a **30 s stationary warm-up + 5 s neutral calibration** (matching [`modes.py`](modes.py)), captures **dynamic Vision reference angles** for Shoulder and Elbow alignment, fuses upper-limb joint angles in real time using **Unscented Kalman Filters (UKFs)**, exports every session to a **4-sheet Excel workbook**, and generates **7 post-experiment diagnostic plots**.
+
+It can be run either through the **Command-Line Interface ([`main.py`](main.py))** or through the standalone **PySide6 Graphical User Interface ([`gui_main.py`](gui_main.py) / [`main_gui.py`](main_gui.py))**.
 
 ---
 
-## A. Project Structure
+## 📑 Table of Contents
+
+- [📂 Project Structure](#-project-structure)
+- [🧠 System Architecture & Data Flow](#-system-architecture--data-flow)
+- [⚙️ Prerequisites & Installation](#️-prerequisites--installation)
+- [🚀 Quick Start — How to Run](#-quick-start--how-to-run)
+- [🖥️ GUI vs. CLI Relationship](#️-gui-vs-cli-relationship)
+- [📊 Session Recording & Analysis Outputs](#-session-recording--analysis-outputs)
+- [🧪 Testing & Verification](#-testing--verification)
+- [🧭 Where to Modify Things](#-where-to-modify-things)
+- [📄 License](#-license)
+
+---
+
+## 📂 Project Structure
 
 ```text
 Python/
-├── rehab_app/                          # Core modular rehabilitation package (independent of GUI)
-│   ├── __init__.py                     # Package exports for clean imports
-│   ├── config.py                       # Default constants and RehabConfig validation
-│   ├── calibration.py                  # Quaternion math, warm-up, neutral calibration, axis mapping
+├── rehab_app/                          # Core modular rehabilitation package (GUI-independent)
+│   ├── README.md                       # Detailed core module, math, and debugging guide
+│   ├── __init__.py                     # Public package exports
+│   ├── config.py                       # Default constants, direction signs, and RehabConfig
+│   ├── calibration.py                  # Quaternion math, modes.py calibration, Vision ref averaging
 │   ├── sensors.py                      # Delsys Trigno connection, OR 16 bits mode, WXYZ polling
-│   ├── vision.py                       # MediaPipe pose detection, smoothing, 2D angles, overlay
-│   ├── fusion.py                       # AngleUKF and Shoulder / Elbow / Trunk fusion rules
+│   ├── vision.py                       # MediaPipe PoseLandmarker, smoothing, 2D angles, overlay
+│   ├── fusion.py                       # Dynamic IMU alignment, AngleUKF, JointFusionPipeline
 │   ├── recording.py                    # SessionRecorder and 4-sheet Excel workbook export
 │   ├── analysis.py                     # Excel-loaded consistency metrics and 7 Matplotlib plots
 │   └── controller.py                   # RehabApplicationController coordinating all subsystems
-├── rehab_gui/                          # PySide6 Graphical User Interface package
+├── rehab_monitor_gui/                  # Standalone PySide6 GUI display layer (read-only over main.py)
+│   ├── README.md                       # Complete GUI setup, layout, architecture & troubleshooting
 │   ├── __init__.py                     # GUI package exports
-│   ├── theme.py                        # Visual theme, Delsys color palette, and Images/ asset paths
-│   ├── main_window.py                  # RehabMainWindow (header bar, 30 Hz refresh timer, tab container)
-│   ├── dashboard_tab.py                # Live webcam view, posture banner, angle cards, experiment controls
-│   ├── settings_tab.py                 # Organized settings form for camera, Delsys, calibration, and UKF
-│   └── results_tab.py                  # Recorded Excel workbook browser, plot viewer, and metrics table
-├── tests/                              # Automated unit, integration, and GUI test suite
-│   ├── test_rehab_app.py               # Verifies mathematical parity with original script & pipeline
-│   └── test_rehab_gui.py               # Verifies GUI widgets, button guards, settings, and results viewer
-├── Images/                             # Visual assets used by the GUI
-│   ├── delsys.png                      # Delsys header logo
-│   ├── window_icon.png                 # Application window icon
-│   ├── checked.png                     # Custom checkbox checked icon
-│   ├── unchecked.png                   # Custom checkbox unchecked icon
-│   └── centro_trigger_config.png       # Delsys Centro trigger diagram
-├── AeroPy/                             # Delsys AeroPy .NET wrapper layer (preserved unchanged)
-│   ├── TrignoBase.py                   # DelsysAPI license validation, sensor scan, mode setup, polling
-│   └── DataManager.py                  # Delsys demo data buffer manager
+│   ├── bridge.py                       # 30 Hz read-only Qt output bridge around RehabApplicationController
+│   ├── widgets.py                      # VideoFeedPanel, JointMeasurementsPanel, Status & Results panels
+│   ├── main_window.py                  # RehabMonitorWindow (header controls + 2-tab dashboard)
+│   └── styles.py                       # Dark-slate clinical QSS theme and Images/ asset paths
+├── tests/                              # Automated unit, pipeline, and GUI verification suite
+│   ├── README.md                       # Test descriptions, commands, and failure diagnosis
+│   ├── test_rehab_app.py               # Mathematical parity, dynamic alignment, recording & analysis tests
+│   ├── test_rehab_monitor_gui.py       # Offscreen-Qt tests for rehab_monitor_gui parity with main.py
+│   └── test_rehab_gui.py               # Legacy test file from removed rehab_gui/ package
+├── Images/                             # Visual assets (delsys.png, window_icon.png, etc.)
+├── AeroPy/                             # Delsys AeroPy .NET wrapper (TrignoBase.py, DataManager.py)
 ├── resources/                          # DelsysAPI.dll and .NET runtime dependencies
-├── recordings/                         # Saved Excel workbooks (.xlsx) and analysis plot folders
-├── DataCollector/                      # Original Delsys demo GUI collector modules (preserved)
-├── Export/                             # Original Delsys demo CSV writer (preserved)
-├── Plotter/                            # Original Delsys demo VisPy plotter (preserved)
-├── StartMenu/                          # Original Delsys demo start window (preserved)
-├── UIControls/                         # Original Delsys demo landing controller (preserved)
-├── gui_main.py                         # Dedicated entry point to launch the PySide6 GUI
-├── main.py                             # CLI entry point (supports --gui, live, --simulate, --analyze-file)
+├── recordings/                         # Exported Excel workbooks (.xlsx) and analysis plot folders
+├── DataCollector/ Export/ Plotter/ StartMenu/ UIControls/  # Original Delsys demo modules (preserved)
+├── main.py                             # Primary CLI entry point (live, --simulate, --gui, --analyze-file)
+├── gui_main.py                         # Primary PySide6 GUI launcher (also called by main.py --gui)
+├── main_gui.py                         # Convenience alias delegating to gui_main.launch_gui()
+├── modes.py                            # Reference Delsys orientation/calibration implementation
 ├── rehab_vision_delsys_ukf_Final.py    # Original single-file reference implementation (preserved)
 ├── DelsysPythonDemo.py                 # Original Delsys EMG demo entry point (preserved)
-├── pose_landmarker_full.task           # MediaPipe PoseLandmarker model asset file
-└── requirements.txt                    # Python package dependencies
+├── pose_landmarker_full.task           # MediaPipe PoseLandmarker model asset
+├── requirements.txt                    # Python package dependencies
+├── UPDATE_1.md                         # Design notes for dynamic IMU-to-Vision offset alignment
+└── LICENSE                             # Delsys, Inc. API License Agreement
 ```
 
-### Folder-Specific Documentation
-For detailed module-level documentation, see the dedicated README inside each folder:
-- **[rehab_app/README.md](rehab_app/README.md)**: Core rehabilitation modules, classes, functions, mathematical pipeline, and independent debugging guide.
-- **[rehab_gui/README.md](rehab_gui/README.md)**: PySide6 GUI screens, widgets, theme customization, and controller communication guide.
-- **[tests/README.md](tests/README.md)**: Automated unit, pipeline, and GUI test cases, commands, failure diagnosis, and instructions for adding new tests.
+### 📚 Folder-Specific Documentation
+- **[`rehab_app/README.md`](rehab_app/README.md)** — Core modules, classes, mathematical equations, calibration & alignment logic, and independent debugging.
+- **[`rehab_monitor_gui/README.md`](rehab_monitor_gui/README.md)** — Complete guide to the new PySide6 GUI, data flow from `main.py`, layout, CLI flags, and troubleshooting.
+- **[`tests/README.md`](tests/README.md)** — Automated test suite breakdown, execution commands, and how to add new tests.
 
 ---
 
-## B. Data Flow & GUI Architecture
+## 🧠 System Architecture & Data Flow
 
-### 1. Core Data Pipeline
 ```text
 [Delsys Trigno Sensors 1 & 2] (OR 16 bits, 74 Hz)
-       │  Raw Quaternion Channels: ORIENTATION W, X, Y, Z
+       │  ORIENTATION W, X, Y, Z quaternion packets (per-poll new_quaternion_data guard)
        ▼
 [rehab_app/sensors.py: DelsysSensorManager]
-       │  Normalizes (W, X, Y, Z) and passes to CalibrationManager
+       │  Normalizes (W, X, Y, Z) -> CalibrationManager
        ▼
-[rehab_app/calibration.py: CalibrationManager]
-       │  1. 0–30 s: Stationary Warm-up
-       │  2. 30–35 s: Averages neutral quaternions -> q_ref
-       │  3. >35 s: q_rel = normalize(q_conjugate(q_ref) * q_curr)
-       │  4. Euler angles -> Physical mapping & 2.0° deadband:
-       │     • imu_pitch = deadband(mathematical_roll)
-       │     • imu_yaw   = deadband(mathematical_yaw)
-       │     • mathematical_pitch (physical roll) is ignored
+[rehab_app/calibration.py: CalibrationManager] (matches modes.py)
+       │  1. Stage 1 (0–30 s): Stationary Warm-up
+       │  2. Stage 2 (30–35 s): Neutral quaternion averaging -> q_ref
+       │     + Simultaneous Shoulder & Elbow Vision reference averaging (record_vision_sample)
+       │  3. Stage 3 (>=35 s): Immediate fallthrough -> q_rel = normalize(q_conj(q_ref) * q)
+       │     • imu_pitch = deadband(mathematical_roll, 2.0°)
+       │     • imu_yaw   = deadband(mathematical_yaw, 2.0°)
        ▼
-[rehab_app/controller.py: RehabApplicationController.step_session()] ◄─── [rehab_app/vision.py: PoseVisionProcessor]
-       │                                                                   • Flips webcam frame & runs MediaPipe Pose
-       │                                                                   • Exponential smoothing (alpha = 0.3)
-       │                                                                   • Computes 2D Shoulder & Elbow Vision angles
+[rehab_app/controller.py: RehabApplicationController.step_session()] ◄── [rehab_app/vision.py: PoseVisionProcessor]
+       │                                                                  • MediaPipe PoseLandmarker
+       │                                                                  • Exponential smoothing (alpha = 0.3)
+       │                                                                  • 2D Shoulder & Elbow Vision angles
        ▼
 [rehab_app/fusion.py: JointFusionPipeline.step()]
-       │  • Shoulder UKF: fuses IMU 1 Pitch + Shoulder Vision
-       │  • Elbow UKF:    fuses (IMU 1 Yaw + 90.0°) + Elbow Vision
-       │  • Trunk Angle:  passes through IMU 2 Pitch directly (unfused)
-       │  • Records actual UKF Kalman gains K = [K_angle, K_velocity]
+       │  Dynamic Alignment: IMU_corrected = Vision_reference + direction_sign * IMU_relative
+       │  • Shoulder (sign = -1.0): Aligned IMU 1 Pitch + Shoulder Vision -> Shoulder UKF
+       │  • Elbow    (sign = -1.0): Aligned IMU 1 Yaw   + Elbow Vision    -> Elbow UKF
+       │  • Trunk:                  IMU 2 Pitch passed through directly (unfused)
        ▼
-[rehab_app/recording.py: SessionRecorder.record_step()]
-       │  Appends timestamped row to RawData and ProcessedData buffers
-       │  (Preserves missing data as NaN without silent interpolation)
+[rehab_app/recording.py: SessionRecorder] ──► recordings/rehab_session_YYYYMMDD_HHMMSS_mmm.xlsx
+       │                                      (Sheets: RawData | ProcessedData | Metrics | Settings)
        ▼
-[On Experiment Stop: SessionRecorder.export_to_excel()]
-       │  Writes recordings/rehab_session_YYYYMMDD_HHMMSS_mmm.xlsx
-       │  Sheets: RawData | ProcessedData | Metrics | Settings
-       ▼
-[rehab_app/analysis.py: SessionAnalyzer.analyze_workbook()]
-          Loads saved Excel workbook and generates 7 PNG plots in
-          recordings/rehab_session_YYYYMMDD_HHMMSS_mmm_analysis/
+[rehab_app/analysis.py: SessionAnalyzer]  ──► 7 PNG diagnostic plots in recordings/<session>_analysis/
 ```
-
-### 2. How the GUI Communicates with the Core Controller
-The `rehab_gui/` package is a pure presentation and control layer built on **PySide6**. It never duplicates sensor acquisition, quaternion math, MediaPipe processing, UKF equations, or Excel export logic. Instead, `RehabMainWindow` holds an instance of `RehabApplicationController` and communicates via its public methods:
-- **Non-blocking 30 Hz UI Poll (`QTimer`):** Calls `controller.get_current_measurements()`, `controller.get_sensor_status()`, and `controller.get_latest_frame()` every 33 ms to update the webcam display, calibration progress bar, and joint angle cards without blocking the Qt event loop.
-- **Experiment Lifecycle Controls:**
-  - **Connect / Disconnect Delsys:** Calls `controller.start_experiment()` (or starts a 74 Hz simulated quaternion feeder thread when *Use Simulated Delsys Sensors* is checked) to begin sensor warm-up, neutral calibration, and webcam preview.
-  - **Start Experiment:** Guarded until `status["is_calibrated"]` is `True`. Resets the `SessionRecorder` buffer (`controller.recorder.reset()`) and UKF filter states (`controller.fusion_pipeline.reset()`) so the saved Excel workbook records the active experiment cleanly from `t = 0.0 s` while keeping the neutral calibration reference quaternions.
-  - **Stop Experiment:** Runs `controller.stop_experiment(export_recording=True, run_analysis=True)` on a background worker thread so Excel export and Matplotlib plot generation never freeze the UI.
-  - **Reset Calibration / Reset Session:** Calls `controller.reset_calibration()` and `controller.reset_session()`.
-  - **Settings Management:** Calls `controller.get_settings()` and `controller.update_settings(**kwargs)`.
-
-### 3. Explanation of Each GUI Screen and Its Controls
-1. **Tab 1 — Live Rehabilitation Dashboard (`rehab_gui/dashboard_tab.py`):**
-   - **Live Webcam Panel:** Shows the mirrored webcam feed with MediaPipe skeleton connections (red) and landmarks (green), plus an optional *Draw On-Video Text Overlay* checkbox (using `Images/checked.png`).
-   - **Posture Feedback Banner:** Color-coded banner (`START POSITION (Ready)`, `RIGHT`, `WRONG: Keep Shoulders Straight!`, `LANDMARKS NOT VISIBLE`, `NO POSE DETECTED`).
-   - **System & Calibration Status Card:** Shows sensor connection status, calibration progress bar (`0%` → `100%`), experiment state, elapsed time, and sample count.
-   - **Joint Telemetry Cards:** Separate cards for **Shoulder** (`Shoulder Vision`, `IMU 1 Pitch`, `Shoulder UKF`), **Elbow** (`Elbow Vision`, `IMU 1 Yaw`, `IMU 1 Yaw + 90°`, `Elbow UKF`), and **Trunk** (`IMU 2 Pitch / Trunk Angle`).
-   - **Experiment Controls Bar:** *Use Simulated Delsys Sensors* checkbox, *Connect / Disconnect Delsys*, *Reset Calibration*, *Start Experiment* (locked until calibrated), *Stop Experiment*, *Reset Session*, and *Results & Plots*.
-2. **Tab 2 — Experiment & UKF Settings (`rehab_gui/settings_tab.py`):**
-   - Grouped forms for **Camera & MediaPipe Vision**, **Delsys Sensors & Calibration**, **Unscented Kalman Filter (UKF) Tuning**, and **Session Recording & Excel Export**.
-   - Includes **Apply Settings** (validates via `RehabConfig.validate()`) and **Restore Original Defaults**. Automatically locked while sensors or an experiment are running.
-3. **Tab 3 — Recorded Sessions & Analysis (`rehab_gui/results_tab.py`):**
-   - Lists all `.xlsx` files in `recordings/` (newest first).
-   - Displays any of the 7 generated diagnostic PNG plots in a scalable viewer alongside the full `Metrics` sheet table (`MAE`, `RMSE`, `Bias`, `Std_Residual`, `LoA_95`, `Pearson_r`), with buttons to **Generate / Refresh Analysis Plots**, **Open Excel Workbook**, and **Open Recordings Folder**.
 
 ---
 
-## C. How to Run
+## ⚙️ Prerequisites & Installation
 
-> **Python Interpreter:** Use Python 3.13 where all dependencies are installed:
-> `C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe`
-
-### 1. Launch the PySide6 GUI (Standard Mode)
-```powershell
-& "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" gui_main.py
-```
-*(Or equivalently: `& "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" main.py --gui`)*
-
-### 2. Launch the PySide6 GUI in Simulation Mode (Fast Warm-Up for Immediate Testing)
-```powershell
-& "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" gui_main.py --simulate --warmup 3 --calibration 2
-```
-1. Click **Connect Delsys** in the bottom-left control bar.
-2. Watch the webcam feed and the **Calibration Progress** bar reach `100% (Both Sensors Calibrated)` after 5 seconds.
-3. Click **Start Experiment** to record live fused movements, then click **Stop Experiment** to export the 4-sheet Excel workbook and view the 7 plots in the **Recorded Sessions & Analysis** tab.
-
-### 3. Run the Standalone CLI (Without PySide6 GUI)
-- **Live Webcam + Real Delsys Hardware:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" main.py
-  ```
-- **Live Webcam + Simulated Delsys Sensors:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" main.py --simulate --warmup 5 --calibration 3 --duration 30
-  ```
-- **Headless Simulation (No Webcam or Sensors Required):**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" main.py --simulate --no-window --no-vision --warmup 2 --calibration 1 --duration 4
-  ```
-- **Analyze an Existing Saved Excel Workbook:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" main.py --analyze-file recordings\<your_session_file>.xlsx
-  ```
+1. **System Requirements:**
+   - Windows OS (required for `pythonnet` and `resources/DelsysAPI.dll` when using physical Delsys Trigno hardware).
+   - Python 3 (verified on **Python 3.13**).
+   - Webcam (optional in `--simulate --no-vision` mode).
+   - Delsys Trigno RF base station + 2 paired orientation-capable Trigno sensors (optional in `--simulate` mode).
+2. **Install Python Dependencies** from the `Python/` directory:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+   Dependencies in [`requirements.txt`](requirements.txt): `PySide6`, `Vispy`, `Scipy`, `pythonnet`, `numpy`, `opencv-python`, `mediapipe`, `pandas`, `openpyxl`, `matplotlib`.
+3. **Verify Required Assets:** Ensure `pose_landmarker_full.task` is present in the `Python/` root directory (and `resources/DelsysAPI.dll` if connecting physical Delsys hardware).
 
 ---
 
-## D. Where to Modify Things (Core & GUI)
+## 🚀 Quick Start — How to Run
 
-| If I want to modify... | File | Function / Class |
+Run all commands from the `Python/` root directory.
+
+### 🖥️ Launch the PySide6 GUI
+```powershell
+# Standard launch (ready for real Delsys hardware + live webcam)
+python gui_main.py
+```
+*(You can also launch via `python main_gui.py` or `python main.py --gui`.)*
+
+```powershell
+# Launch GUI in Simulation Mode with fast 3 s warm-up + 2 s calibration (no Delsys hardware needed)
+python gui_main.py --simulate --warmup 3 --calibration 2
+```
+
+### 📷 Run the Standalone CLI (`main.py`)
+```powershell
+# 1. Live webcam + real Delsys Trigno sensors (opens OpenCV window; press 'q' to stop & export)
+python main.py
+
+# 2. Live webcam + simulated Delsys sensors
+python main.py --simulate --warmup 5 --calibration 3 --duration 60
+
+# 3. Headless simulation (no webcam or sensors required)
+python main.py --simulate --no-window --no-vision --warmup 2 --calibration 1 --duration 4
+
+# 4. Re-analyze an existing saved Excel workbook
+python main.py --analyze-file recordings/<session_file>.xlsx
+```
+
+---
+
+## 🖥️ GUI vs. CLI Relationship
+
+- **[`main.py`](main.py)** is the core CLI application. When run with `--show-window` (default), it opens an OpenCV window displaying MediaPipe landmarks, posture status, and a 6-line (during calibration) or 8-line (after calibration) telemetry overlay.
+- **[`rehab_monitor_gui/`](rehab_monitor_gui/README.md)** is a **read-only PySide6 display layer** built around a single `RehabApplicationController` instance with `show_opencv_window=False`. It never duplicates sensor polling, calibration, alignment, or UKF math—it reads live outputs directly from `controller.get_current_measurements()`, `controller.get_sensor_status()`, `controller.get_latest_frame()`, and `controller.get_completed_results()` at 30 Hz.
+- Both interfaces produce **identical calibration references, aligned IMU readings, UKF outputs, Trunk angles, Excel workbooks, and analysis plots**.
+
+---
+
+## 📊 Session Recording & Analysis Outputs
+
+When a session stops (pressing `q` / `Ctrl+C` in `main.py`, or clicking **Stop & Export** in the GUI):
+1. A uniquely named workbook is saved to `recordings/rehab_session_YYYYMMDD_HHMMSS_mmm.xlsx` with **4 sheets**:
+   - `RawData` (32 columns): raw `(W, X, Y, Z)` quaternions, mathematical Euler angles, calibration phases, raw vision angles, landmark visibilities, and status strings.
+   - `ProcessedData` (43 columns): raw & dynamically aligned IMU angles, Vision references, direction signs, Vision angles, Shoulder/Elbow UKF angles & velocities, unfused Trunk angle, inter-source differences, and UKF Kalman gains.
+   - `Metrics`: pairwise inter-source consistency metrics (`MAE`, `RMSE`, `Bias`, `Std`, `95% LoA`, `Pearson_r`, missing-data `%`) plus single-channel summaries.
+   - `Settings`: full `RehabConfig` snapshot, reference quaternions, Vision calibration references, and sensor metadata.
+2. `SessionAnalyzer` generates **7 diagnostic PNG plots** in `recordings/<workbook_stem>_analysis/`:
+   - `shoulder_angles_comparison.png`, `elbow_angles_comparison.png`, `trunk_angle.png`
+   - `shoulder_differences.png`, `elbow_differences.png`
+   - `ukf_kalman_gains.png`, `ukf_consistency_distributions.png`
+
+---
+
+## 🧪 Testing & Verification
+
+Run the active automated unit, pipeline, and offscreen-Qt GUI test suites (no physical hardware or webcam required):
+
+```powershell
+python -m unittest tests.test_rehab_app tests.test_rehab_monitor_gui -v
+```
+
+See [`tests/README.md`](tests/README.md) for the full breakdown of all test cases and troubleshooting tips.
+
+---
+
+## 🧭 Where to Modify Things
+
+| If you want to modify... | File | Function / Class |
 | :--- | :--- | :--- |
-| **GUI color palette, fonts, or `Images/` asset paths** | `rehab_gui/theme.py` | `PALETTE`, `build_stylesheet()` |
-| **GUI top header bar, window size, or 30 Hz refresh timer** | `rehab_gui/main_window.py` | `RehabMainWindow._setup_window()`, `_build_ui()`, `_refresh_ui()` |
-| **GUI live webcam display, angle cards, or experiment buttons** | `rehab_gui/dashboard_tab.py` | `DashboardTab._build_ui()`, `update_telemetry()`, `update_video_frame()` |
-| **GUI settings form fields or validation feedback** | `rehab_gui/settings_tab.py` | `SettingsTab._build_ui()`, `apply_settings()`, `restore_defaults()` |
-| **GUI recorded Excel browser, plot viewer, or metrics table** | `rehab_gui/results_tab.py` | `ResultsTab._build_ui()`, `refresh_recordings_list()`, `_load_workbook_views()` |
-| **Camera index, frame rate, or default durations** | `rehab_app/config.py` | `CAMERA_INDEX`, `RECORD_SECONDS`, `RehabConfig` |
-| **MediaPipe skeleton connections or landmark indices** | `rehab_app/vision.py` | `POSE_CONNECTIONS`, `PoseVisionProcessor.evaluate_landmarks()` |
-| **Shoulder & Elbow 2D Vision angle calculation** | `rehab_app/vision.py` | `calculate_angle()`, `vision_angle()`, `PoseVisionProcessor.evaluate_landmarks()` |
-| **Exercise posture feedback rules (`RIGHT`, `WRONG`, `START POSITION`)** | `rehab_app/vision.py` | `PoseVisionProcessor.evaluate_landmarks()` |
-| **Delsys sensor indices, `OR 16 bits` mode, or WXYZ channel mapping** | `rehab_app/sensors.py` | `find_or_mode()`, `find_quaternion_channels()`, `DelsysSensorManager._sensor_worker_loop()` |
-| **Quaternion math, warm-up, neutral calibration, or `2.0°` deadband** | `rehab_app/calibration.py` | `normalize()`, `q_multiply()`, `average_quaternions()`, `CalibrationManager.process_quaternion()` |
-| **Physical IMU axis mapping (Roll → Pitch, Yaw → Yaw)** | `rehab_app/calibration.py` | `CalibrationManager.process_quaternion()` |
-| **UKF tuning (`Q_ANGLE`, `Q_VELOCITY`, `R_IMU`, `R_VISION`) & equations** | `rehab_app/config.py` & `rehab_app/fusion.py` | `AngleUKF.sigma_points()`, `AngleUKF.predict()`, `AngleUKF.update()` |
-| **Joint fusion assignments or Elbow `+90.0°` IMU offset** | `rehab_app/fusion.py` | `fuse_shoulder_angle()`, `fuse_elbow_angle()`, `JointFusionPipeline.step()` |
-| **Excel sheet columns (`RawData`, `ProcessedData`, `Settings`)** | `rehab_app/recording.py` | `RAW_COLUMNS`, `PROCESSED_COLUMNS`, `SessionRecorder.record_step()` |
-| **Consistency metrics (`MAE`, `RMSE`, `Bias`, `Std`, `LoA`, `Pearson_r`)** | `rehab_app/recording.py` | `compute_consistency_metrics_table()` |
-| **Post-experiment Matplotlib plots** | `rehab_app/analysis.py` | `SessionAnalyzer.analyze_workbook()`, `_plot_joint_angles()`, `_plot_kalman_gains()` |
+| **GUI visual theme, colors, or `Images/` assets** | [`rehab_monitor_gui/styles.py`](rehab_monitor_gui/styles.py) | `COLORS`, `build_app_stylesheet()` |
+| **GUI layout, panels, or displayed fields** | [`rehab_monitor_gui/widgets.py`](rehab_monitor_gui/widgets.py) & [`rehab_monitor_gui/main_window.py`](rehab_monitor_gui/main_window.py) | `VideoFeedPanel`, `JointMeasurementsPanel`, `StatusAndRecordingPanel`, `RehabMonitorWindow` |
+| **GUI polling rate or controller bridge** | [`rehab_monitor_gui/bridge.py`](rehab_monitor_gui/bridge.py) | `ApplicationOutputBridge` |
+| **Default timings, direction signs (`-1.0`), or UKF variances** | [`rehab_app/config.py`](rehab_app/config.py) | `SHOULDER_IMU_DIRECTION_SIGN`, `ELBOW_IMU_DIRECTION_SIGN`, `RehabConfig` |
+| **Quaternion math, neutral calibration, or Vision reference averaging** | [`rehab_app/calibration.py`](rehab_app/calibration.py) | `CalibrationManager.process_quaternion()`, `record_vision_sample()` |
+| **Delsys `OR 16 bits` mode, WXYZ polling, or staleness timeout** | [`rehab_app/sensors.py`](rehab_app/sensors.py) | `DelsysSensorManager._sensor_worker_loop()` |
+| **MediaPipe landmarks, 2D angles, or posture feedback rules** | [`rehab_app/vision.py`](rehab_app/vision.py) | `PoseVisionProcessor.evaluate_landmarks()` |
+| **Dynamic IMU alignment or UKF equations** | [`rehab_app/fusion.py`](rehab_app/fusion.py) | `align_imu_angle()`, `AngleUKF`, `JointFusionPipeline.step()` |
+| **Excel sheet schemas or consistency metrics** | [`rehab_app/recording.py`](rehab_app/recording.py) | `RAW_COLUMNS`, `PROCESSED_COLUMNS`, `compute_consistency_metrics_table()` |
+| **Post-experiment Matplotlib plots** | [`rehab_app/analysis.py`](rehab_app/analysis.py) | `SessionAnalyzer.analyze_workbook()` |
 
 ---
 
-## E. Testing and Verification
+## 📄 License
 
-### 1. Run All Automated Core & GUI Tests (Simulated / Mock Data)
-- **Command:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" -m unittest discover -s tests -v
-  ```
-- **Expected Result:** `Ran 10 tests in ~4.5s — OK` (7 core mathematical/pipeline tests in `tests/test_rehab_app.py` + 3 GUI workflow tests in `tests/test_rehab_gui.py`).
-
-### 2. Run GUI Automated Tests Only (Offscreen Qt Verification)
-- **Command:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" -m unittest tests/test_rehab_gui.py -v
-  ```
-- **Expected Result:** `Ran 3 tests — OK` (verifies `Images/` assets, `PALETTE` stylesheet, button lock guards before/after calibration, live angle/frame updates, settings validation, and Excel results loading).
-
-### 3. Interactive GUI Simulation Test
-- **Command:**
-  ```powershell
-  & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" gui_main.py --simulate --warmup 3 --calibration 2
-  ```
-- **Expected Result:** GUI opens with *Use Simulated Delsys Sensors* checked; clicking **Connect Delsys** shows live webcam + MediaPipe skeleton, completes calibration in 5 seconds, enables **Start Experiment**, and exports the 4-sheet Excel workbook and 7 analysis plots on **Stop Experiment**.
-=======
-# MV_GP_
->>>>>>> 38c5d1e8cc7ae8c077bdea66f7697f27b51748a9
+This project uses the Delsys Trigno API under the terms of the **[Delsys, Inc. Application Programming Interfaces License Agreement](LICENSE)**.

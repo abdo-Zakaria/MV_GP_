@@ -365,10 +365,11 @@ class DelsysSensorManager:
 
             while not self._stop_event.is_set() and (time.monotonic() - start) < self.record_seconds:
                 if not base.TrigBase.CheckYTDataQueue():
-                    time.sleep(0.003)
+                    time.sleep(0.005)
                     continue
                 raw = base.TrigBase.PollYTDataByString()
                 received_at = time.monotonic()
+                new_quaternion_data: Dict[int, bool] = {1: False, 2: False}
 
                 for guid in raw.Keys:
                     key = str(guid).lower()
@@ -378,14 +379,17 @@ class DelsysSensorManager:
                     for sample in raw[guid]:
                         try:
                             latest[number][component] = float(sample.Item2)
+                            new_quaternion_data[number] = True
                         except (TypeError, ValueError):
                             pass
 
                 for number in (1, 2):
-                    vals = latest[number]
-                    if not all(k in vals for k in "wxyz"):
+                    if not new_quaternion_data[number]:
                         continue
-                    q = normalize(tuple(vals[k] for k in "wxyz"))
+                    vals = latest[number]
+                    if not all(k in vals for k in ("w", "x", "y", "z")):
+                        continue
+                    q = normalize((vals["w"], vals["x"], vals["y"], vals["z"]))
                     if q is None:
                         continue
                     self.inject_quaternion_sample(number, q, timestamp=received_at)
