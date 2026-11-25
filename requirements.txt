@@ -1,0 +1,10 @@
+PySide6
+Vispy
+Scipy
+pythonnet
+numpy
+opencv-python
+mediapipe
+pandas
+openpyxl
+matplotlib

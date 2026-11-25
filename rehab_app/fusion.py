@@ -1,0 +1,402 @@
+"""
+Unscented Kalman Filter (UKF) and joint angle fusion pipelines.
+
+If fused Shoulder or Elbow angles behave unexpectedly, inspect this module.
+
+Preserves the exact mathematical equations and fusion assignments from
+rehab_vision_delsys_ukf_Final.py:
+- UKF state vector: x = [angle (deg), angular_velocity (deg/s)]
+- Shoulder UKF: fuses IMU 1 Pitch + Shoulder Vision
+- Elbow UKF: fuses (IMU 1 Yaw + 90.0 deg) + Elbow Vision
+  (the +90.0 deg offset is added to IMU 1 Yaw before calling the UKF update)
+- Trunk angle: IMU 2 Pitch directly, without UKF fusion
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+
+from rehab_app.calibration import wrap_deg
+from rehab_app.config import (
+    ELBOW_IMU_OFFSET_DEG,
+    INITIAL_P_ANGLE,
+    INITIAL_P_VELOCITY,
+    Q_ANGLE,
+    Q_VELOCITY,
+    R_IMU,
+    R_VISION,
+    UKF_ALPHA,
+    UKF_BETA,
+    UKF_KAPPA,
+)
+
+
+def angle_residual(a: float, b: float) -> float:
+    """
+    Compute the shortest-arc signed difference (a - b) in degrees within [-180, 180).
+    Used instead of simple subtraction so angles near +/-180 deg do not jump by 360 deg.
+    """
+    return wrap_deg(a - b)
+
+
+class AngleUKF:
+    """
+    Scaled sigma-point Unscented Kalman Filter for a single joint angle.
+    - State x: [angle (deg), angular_velocity (deg/s)]
+    - Measurement z: scalar angle (deg) from either "imu" (R_IMU = 9.0) or "vision" (R_VISION = 16.0).
+    """
+
+    def __init__(
+        self,
+        q_angle: float = Q_ANGLE,
+        q_velocity: float = Q_VELOCITY,
+        r_imu: float = R_IMU,
+        r_vision: float = R_VISION,
+        initial_p_angle: float = INITIAL_P_ANGLE,
+        initial_p_velocity: float = INITIAL_P_VELOCITY,
+        ukf_alpha: float = UKF_ALPHA,
+        ukf_beta: float = UKF_BETA,
+        ukf_kappa: float = UKF_KAPPA,
+        max_predict_dt: float = 0.25,
+        min_process_noise_dt: float = 1e-3,
+    ) -> None:
+        self.q_angle = float(q_angle)
+        self.q_velocity = float(q_velocity)
+        self.r_imu = float(r_imu)
+        self.r_vision = float(r_vision)
+        self.initial_p_angle = float(initial_p_angle)
+        self.initial_p_velocity = float(initial_p_velocity)
+        self.ukf_alpha = float(ukf_alpha)
+        self.ukf_beta = float(ukf_beta)
+        self.ukf_kappa = float(ukf_kappa)
+        self.max_predict_dt = float(max_predict_dt)
+        self.min_process_noise_dt = float(min_process_noise_dt)
+
+        self.x = np.array([0.0, 0.0], dtype=float)
+        self.P = np.diag([self.initial_p_angle, self.initial_p_velocity]).astype(float)
+        self.Q = np.diag([self.q_angle, self.q_velocity]).astype(float)
+        self.initialized: bool = False
+        self.last_time: Optional[float] = None
+        self.last_source_time: Dict[str, Optional[float]] = {"imu": None, "vision": None}
+
+        # Store the most recent Kalman gain vector K = [K_angle, K_velocity] for Excel logging
+        self.last_kalman_gain: Optional[np.ndarray] = None
+        self.last_kalman_gain_by_source: Dict[str, Optional[np.ndarray]] = {
+            "imu": None,
+            "vision": None,
+        }
+
+    def reset(self) -> None:
+        """Reset filter state, covariance, and timestamps to initial values."""
+        self.x = np.array([0.0, 0.0], dtype=float)
+        self.P = np.diag([self.initial_p_angle, self.initial_p_velocity]).astype(float)
+        self.initialized = False
+        self.last_time = None
+        self.last_source_time = {"imu": None, "vision": None}
+        self.last_kalman_gain = None
+        self.last_kalman_gain_by_source = {"imu": None, "vision": None}
+
+    def weights(self) -> Tuple[float, np.ndarray, np.ndarray]:
+        """
+        Compute scaled unscented transform scaling parameter `c` and
+        mean/covariance weights (`wm`, `wc`) for n=2 state dimensions (5 sigma points).
+        """
+        n = 2
+        lam = self.ukf_alpha ** 2 * (n + self.ukf_kappa) - n
+        c = n + lam
+        wm = np.full(2 * n + 1, 1.0 / (2.0 * c))
+        wc = wm.copy()
+        wm[0] = lam / c
+        wc[0] = lam / c + 1.0 - self.ukf_alpha ** 2 + self.ukf_beta
+        return c, wm, wc
+
+    @staticmethod
+    def circular_mean(sigmas: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """
+        Compute the weighted mean of sigma points using circular (atan2 of sin/cos)
+        averaging for the angle state and linear averaging for angular velocity.
+        """
+        radians = np.radians(sigmas[:, 0])
+        angle = math.degrees(
+            math.atan2(
+                float(np.sum(weights * np.sin(radians))),
+                float(np.sum(weights * np.cos(radians))),
+            )
+        )
+        velocity = float(np.sum(weights * sigmas[:, 1]))
+        return np.array([angle, velocity], dtype=float)
+
+    def sigma_points(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Generate the 2n+1 = 5 sigma points around current state `self.x`
+        using the Cholesky square-root of `c * self.P`.
+        """
+        c, wm, wc = self.weights()
+        try:
+            root = np.linalg.cholesky(c * self.P)
+        except np.linalg.LinAlgError:
+            root = np.linalg.cholesky(c * (self.P + np.eye(2) * 1e-8))
+        sigmas = [self.x.copy()]
+        for i in range(2):
+            sigmas.extend([self.x + root[:, i], self.x - root[:, i]])
+        return np.asarray(sigmas, dtype=float), wm, wc
+
+    def predict(self, timestamp: float) -> None:
+        """
+        UKF Time-Update (Prediction) Step:
+        Propagate sigma points forward by dt seconds using constant-velocity kinematics:
+            angle_next = wrap_deg(angle + velocity * dt)
+            velocity_next = velocity
+        """
+        timestamp = float(timestamp)
+        if self.last_time is None:
+            self.last_time = timestamp
+            return
+        dt = timestamp - self.last_time
+        if dt <= 0:
+            return
+        dt = min(dt, self.max_predict_dt)
+        sigmas, wm, wc = self.sigma_points()
+        propagated = np.asarray(
+            [[wrap_deg(s[0] + s[1] * dt), s[1]] for s in sigmas],
+            dtype=float,
+        )
+        x_pred = self.circular_mean(propagated, wm)
+        p_pred = np.zeros((2, 2), dtype=float)
+        for i, s in enumerate(propagated):
+            d = np.array([angle_residual(s[0], x_pred[0]), s[1] - x_pred[1]], dtype=float)
+            p_pred += wc[i] * np.outer(d, d)
+        self.x = x_pred
+        self.x[0] = wrap_deg(self.x[0])
+        self.P = p_pred + self.Q * max(dt, self.min_process_noise_dt)
+        self.P = 0.5 * (self.P + self.P.T)
+        self.last_time = timestamp
+
+    def update(self, measurement: Optional[float], source: str, timestamp: float) -> Optional[float]:
+        """
+        UKF Measurement-Update (Correction) Step:
+        1. Predict state up to `timestamp`.
+        2. On first valid measurement, initialize state x = [z, 0.0].
+        3. Compute predicted measurement mean `z_mean`, innovation variance `S`,
+           and state-measurement cross-covariance `Pxz`.
+        4. Compute Kalman gain `K = Pxz / S` and update state `x` and covariance `P`.
+        """
+        if measurement is None or not np.isfinite(measurement):
+            return float(self.x[0]) if self.initialized else None
+        timestamp = float(timestamp)
+        previous = self.last_source_time[source]
+        if previous is not None and timestamp <= previous:
+            return float(self.x[0]) if self.initialized else None
+        if self.last_time is None:
+            self.last_time = timestamp
+        elif timestamp < self.last_time - 1e-6:
+            # Out-of-order delayed samples are ignored without filter rewind
+            return float(self.x[0]) if self.initialized else None
+        else:
+            self.predict(timestamp)
+
+        z = wrap_deg(measurement)
+        R = self.r_imu if source == "imu" else self.r_vision
+        if not self.initialized:
+            self.x[:] = [z, 0.0]
+            self.P[0, 0] = min(self.P[0, 0], R)
+            self.initialized = True
+            self.last_source_time[source] = timestamp
+            return float(self.x[0])
+
+        sigmas, wm, wc = self.sigma_points()
+        z_values = sigmas[:, 0]
+        z_mean = math.degrees(
+            math.atan2(
+                float(np.sum(wm * np.sin(np.radians(z_values)))),
+                float(np.sum(wm * np.cos(np.radians(z_values)))),
+            )
+        )
+        S = R
+        Pxz = np.zeros(2, dtype=float)
+        for i, s in enumerate(sigmas):
+            dz = angle_residual(z_values[i], z_mean)
+            dx = np.array([angle_residual(s[0], self.x[0]), s[1] - self.x[1]], dtype=float)
+            S += wc[i] * dz * dz
+            Pxz += wc[i] * dx * dz
+        if S <= 1e-12:
+            return float(self.x[0])
+        K = Pxz / S
+        self.last_kalman_gain = K.copy()
+        self.last_kalman_gain_by_source[source] = K.copy()
+
+        self.x += K * angle_residual(z, z_mean)
+        self.x[0] = wrap_deg(self.x[0])
+        self.P -= np.outer(K, K) * S
+        self.P = 0.5 * (self.P + self.P.T)
+        self.last_source_time[source] = timestamp
+        return float(self.x[0])
+
+
+# =====================================================================
+# HELPER FUNCTIONS (Matching rehab_vision_delsys_ukf_Final.py)
+# =====================================================================
+def initialize_shoulder_ukf() -> AngleUKF:
+    """Create a fresh AngleUKF instance for the Shoulder joint."""
+    return AngleUKF()
+
+
+def initialize_elbow_ukf() -> AngleUKF:
+    """Create a fresh AngleUKF instance for the Elbow joint."""
+    return AngleUKF()
+
+
+def predict_ukf(ukf: AngleUKF, timestamp: float) -> None:
+    """Run the prediction step on `ukf` up to `timestamp`."""
+    ukf.predict(timestamp)
+
+
+def update_ukf_with_imu(ukf: AngleUKF, imu_angle: Optional[float], timestamp: float) -> Optional[float]:
+    """Update `ukf` with an IMU angle measurement (variance R_IMU = 9.0 deg^2)."""
+    return ukf.update(imu_angle, "imu", timestamp)
+
+
+def update_ukf_with_vision(ukf: AngleUKF, vision_angle: Optional[float], timestamp: float) -> Optional[float]:
+    """Update `ukf` with a MediaPipe vision angle measurement (variance R_VISION = 16.0 deg^2)."""
+    return ukf.update(vision_angle, "vision", timestamp)
+
+
+def fuse_shoulder_angle(
+    ukf: AngleUKF,
+    imu_pitch: Optional[float],
+    vision_shoulder: Optional[float],
+    timestamp: float,
+) -> Optional[float]:
+    """
+    Shoulder fusion rule:
+    IMU 1 Pitch + Shoulder Vision -> Shoulder UKF.
+    """
+    if imu_pitch is not None:
+        update_ukf_with_imu(ukf, imu_pitch, timestamp)
+    if vision_shoulder is not None:
+        update_ukf_with_vision(ukf, vision_shoulder, timestamp)
+    return float(ukf.x[0]) if ukf.initialized else None
+
+
+def fuse_elbow_angle(
+    ukf: AngleUKF,
+    imu_yaw: Optional[float],
+    vision_elbow: Optional[float],
+    timestamp: float,
+    elbow_offset_deg: float = ELBOW_IMU_OFFSET_DEG,
+) -> Optional[float]:
+    """
+    Elbow fusion rule:
+    (IMU 1 Yaw + 90.0 degrees) + Elbow Vision -> Elbow UKF.
+    The +90.0 deg offset converts IMU 1 Yaw to the elbow-angle convention before UKF update.
+    """
+    if imu_yaw is not None:
+        imu_elbow_angle = imu_yaw + elbow_offset_deg
+        update_ukf_with_imu(ukf, imu_elbow_angle, timestamp)
+    if vision_elbow is not None:
+        update_ukf_with_vision(ukf, vision_elbow, timestamp)
+    return float(ukf.x[0]) if ukf.initialized else None
+
+
+# =====================================================================
+# JOINT FUSION PIPELINE
+# =====================================================================
+@dataclass
+class FusionStepResult:
+    """Outputs of a single fusion step across Shoulder, Elbow, and Trunk."""
+    timestamp: float
+    imu1_pitch_deg: Optional[float]
+    imu1_yaw_deg: Optional[float]
+    imu1_elbow_deg: Optional[float]
+    imu2_pitch_deg: Optional[float]
+    shoulder_vision_deg: Optional[float]
+    elbow_vision_deg: Optional[float]
+    shoulder_ukf_deg: Optional[float]
+    shoulder_ukf_velocity_deg_s: Optional[float]
+    elbow_ukf_deg: Optional[float]
+    elbow_ukf_velocity_deg_s: Optional[float]
+    trunk_angle_deg: Optional[float]
+    shoulder_k_imu: Optional[np.ndarray] = None
+    shoulder_k_vision: Optional[np.ndarray] = None
+    elbow_k_imu: Optional[np.ndarray] = None
+    elbow_k_vision: Optional[np.ndarray] = None
+
+
+class JointFusionPipeline:
+    """
+    Coordinates the two UKF filters (Shoulder and Elbow) and the unfused Trunk angle.
+    """
+
+    def __init__(
+        self,
+        shoulder_ukf: Optional[AngleUKF] = None,
+        elbow_ukf: Optional[AngleUKF] = None,
+        elbow_imu_offset_deg: float = ELBOW_IMU_OFFSET_DEG,
+    ) -> None:
+        self.shoulder_ukf = shoulder_ukf if shoulder_ukf is not None else initialize_shoulder_ukf()
+        self.elbow_ukf = elbow_ukf if elbow_ukf is not None else initialize_elbow_ukf()
+        self.elbow_imu_offset_deg = float(elbow_imu_offset_deg)
+
+    def reset(self) -> None:
+        """Reset both Shoulder and Elbow UKFs."""
+        self.shoulder_ukf.reset()
+        self.elbow_ukf.reset()
+
+    def step(
+        self,
+        timestamp: float,
+        imu1_pitch: Optional[float],
+        imu1_yaw: Optional[float],
+        imu2_pitch: Optional[float],
+        shoulder_vision: Optional[float],
+        elbow_vision: Optional[float],
+    ) -> FusionStepResult:
+        """
+        Run one fusion step at `timestamp`:
+        1. IMU 1 Pitch + Shoulder Vision -> Shoulder UKF
+        2. (IMU 1 Yaw + 90 deg) + Elbow Vision -> Elbow UKF
+        3. IMU 2 Pitch -> Trunk angle (without fusion)
+        """
+        self.shoulder_ukf.last_kalman_gain_by_source["imu"] = None
+        self.shoulder_ukf.last_kalman_gain_by_source["vision"] = None
+        self.elbow_ukf.last_kalman_gain_by_source["imu"] = None
+        self.elbow_ukf.last_kalman_gain_by_source["vision"] = None
+
+        shoulder_fused = fuse_shoulder_angle(
+            self.shoulder_ukf, imu1_pitch, shoulder_vision, timestamp
+        )
+        elbow_fused = fuse_elbow_angle(
+            self.elbow_ukf,
+            imu1_yaw,
+            elbow_vision,
+            timestamp,
+            elbow_offset_deg=self.elbow_imu_offset_deg,
+        )
+        imu1_elbow = (imu1_yaw + self.elbow_imu_offset_deg) if imu1_yaw is not None else None
+        trunk_angle = float(imu2_pitch) if imu2_pitch is not None else None
+
+        return FusionStepResult(
+            timestamp=float(timestamp),
+            imu1_pitch_deg=imu1_pitch,
+            imu1_yaw_deg=imu1_yaw,
+            imu1_elbow_deg=imu1_elbow,
+            imu2_pitch_deg=imu2_pitch,
+            shoulder_vision_deg=shoulder_vision,
+            elbow_vision_deg=elbow_vision,
+            shoulder_ukf_deg=shoulder_fused,
+            shoulder_ukf_velocity_deg_s=(
+                float(self.shoulder_ukf.x[1]) if self.shoulder_ukf.initialized else None
+            ),
+            elbow_ukf_deg=elbow_fused,
+            elbow_ukf_velocity_deg_s=(
+                float(self.elbow_ukf.x[1]) if self.elbow_ukf.initialized else None
+            ),
+            trunk_angle_deg=trunk_angle,
+            shoulder_k_imu=self.shoulder_ukf.last_kalman_gain_by_source["imu"],
+            shoulder_k_vision=self.shoulder_ukf.last_kalman_gain_by_source["vision"],
+            elbow_k_imu=self.elbow_ukf.last_kalman_gain_by_source["imu"],
+            elbow_k_vision=self.elbow_ukf.last_kalman_gain_by_source["vision"],
+        )
