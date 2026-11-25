@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Upper-Limb Rehabilitation Application (MediaPipe Vision + Delsys Trigno IMUs + UKF Fusion + PySide6 GUI)
 
 This project is a modular, class-based Python rehabilitation monitoring and data-acquisition application. It combines **MediaPipe Pose** computer vision with **Delsys Trigno** wireless orientation sensors (`OR 16 bits (74 Hz)` quaternion streaming), performs **30 s warm-up + 5 s neutral quaternion calibration**, fuses upper-limb joint angles in real time using **Unscented Kalman Filters (UKFs)**, records every session into a **4-sheet Excel workbook**, and generates **post-experiment comparison metrics and diagnostic plots**.
@@ -216,3 +217,6 @@ The `rehab_gui/` package is a pure presentation and control layer built on **PyS
   & "C:\Users\DELL\AppData\Local\Programs\Python\Python313\python.exe" gui_main.py --simulate --warmup 3 --calibration 2
   ```
 - **Expected Result:** GUI opens with *Use Simulated Delsys Sensors* checked; clicking **Connect Delsys** shows live webcam + MediaPipe skeleton, completes calibration in 5 seconds, enables **Start Experiment**, and exports the 4-sheet Excel workbook and 7 analysis plots on **Stop Experiment**.
+=======
+# MV_GP_
+>>>>>>> 38c5d1e8cc7ae8c077bdea66f7697f27b51748a9
