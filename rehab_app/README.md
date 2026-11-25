@@ -91,23 +91,17 @@ It is completely independent of any Graphical User Interface and can be run head
 
 ## 📡 Data Flow Between Modules
 
-```text
-sensors.py (DelsysSensorManager._sensor_worker_loop)
-   │  Polls W, X, Y, Z quaternions (per-sensor new_quaternion_data guard)
-   ▼
-calibration.py (CalibrationManager.process_quaternion & record_vision_sample)
-   │  30 s warm-up -> 5 s neutral quaternion & Vision reference averaging
-   │  Relative quaternion -> Euler -> imu_pitch = deadband(roll), imu_yaw = deadband(yaw)
-   ▼
-controller.py (RehabApplicationController.step_session) ◄── vision.py (PoseVisionProcessor.process_frame)
-   ▼
-fusion.py (JointFusionPipeline.step)
-   │  • Shoulder UKF <- (shoulder_vision_ref - imu1_pitch) + Shoulder Vision
-   │  • Elbow UKF    <- (elbow_vision_ref    - imu1_yaw)   + Elbow Vision
-   │  • Trunk Angle  <- imu2_pitch (unfused)
-   ▼
-recording.py (SessionRecorder) ──► recordings/*.xlsx ──► analysis.py (SessionAnalyzer -> 7 PNGs)
-```
+### 1. IMU Acquisition, Calibration & Dynamic Alignment
+![IMU Workflow](../Images/diagrams/02_imu_workflow.png)
+
+### 2. Vision (MediaPipe Pose) Pipeline
+![Vision Workflow](../Images/diagrams/03_vision_workflow.png)
+
+### 3. Sensor Fusion & UKF Estimation
+![Sensor Fusion Workflow](../Images/diagrams/04_sensor_fusion_workflow.png)
+
+### 4. Recording & Post-Session Analysis
+![Recording and Analysis Workflow](../Images/diagrams/06_recording_analysis_workflow.png)
 
 ---
 

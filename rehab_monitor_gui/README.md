@@ -49,6 +49,11 @@ The GUI acts **strictly as a visual display layer and session launcher** on top 
 
 ## 📡 Data Flow Architecture
 
+![GUI Read-Only Workflow](../Images/diagrams/05_gui_workflow.png)
+
+<details>
+<summary>Text Summary of 30 Hz Read-Only Bridge</summary>
+
 ```text
 [Existing main.py / RehabApplicationController] (Single Instance, show_opencv_window=False)
    ├── DelsysSensorManager  ──► CalibrationManager (30 s warm-up + 5 s neutral avg)
@@ -70,6 +75,8 @@ The GUI acts **strictly as a visual display layer and session launcher** on top 
    ├── Tab 1: Live Rehabilitation Dashboard (VideoFeedPanel | JointMeasurementsPanel | StatusAndRecordingPanel)
    └── Tab 2: Session Recordings & Plots   (SessionResultsPanel)
 ```
+
+</details>
 
 ---
 

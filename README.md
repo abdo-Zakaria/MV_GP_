@@ -55,7 +55,8 @@ Python/
 │   ├── test_rehab_app.py               # Mathematical parity, dynamic alignment, recording & analysis tests
 │   ├── test_rehab_monitor_gui.py       # Offscreen-Qt tests for rehab_monitor_gui parity with main.py
 │   └── test_rehab_gui.py               # Legacy test file from removed rehab_gui/ package
-├── Images/                             # Visual assets (delsys.png, window_icon.png, etc.)
+├── Images/                             # Visual assets (delsys.png, window_icon.png) & workflow diagrams
+│   └── diagrams/                       # 6 PNG architecture & execution workflow diagrams
 ├── AeroPy/                             # Delsys AeroPy .NET wrapper (TrignoBase.py, DataManager.py)
 ├── resources/                          # DelsysAPI.dll and .NET runtime dependencies
 ├── recordings/                         # Exported Excel workbooks (.xlsx) and analysis plot folders
@@ -80,6 +81,22 @@ Python/
 ---
 
 ## 🧠 System Architecture & Data Flow
+
+### 1. Overall Project Workflow
+![Overall Project Workflow](Images/diagrams/01_overall_project_workflow.png)
+
+### 2. Subsystem Workflow Diagrams
+
+| Workflow | Diagram |
+| :--- | :--- |
+| **IMU Acquisition, Calibration & Dynamic Alignment** | ![IMU Workflow](Images/diagrams/02_imu_workflow.png) |
+| **Vision (MediaPipe Pose) Pipeline** | ![Vision Workflow](Images/diagrams/03_vision_workflow.png) |
+| **Sensor Fusion & Separate Shoulder/Elbow UKFs** | ![Sensor Fusion Workflow](Images/diagrams/04_sensor_fusion_workflow.png) |
+| **Read-Only PySide6 GUI Architecture** | ![GUI Workflow](Images/diagrams/05_gui_workflow.png) |
+| **Recording & Post-Session Analysis Pipeline** | ![Recording and Analysis Workflow](Images/diagrams/06_recording_analysis_workflow.png) |
+
+<details>
+<summary>Text Summary of Core Data Pipeline</summary>
 
 ```text
 [Delsys Trigno Sensors 1 & 2] (OR 16 bits, 74 Hz)
@@ -112,6 +129,8 @@ Python/
        ▼
 [rehab_app/analysis.py: SessionAnalyzer]  ──► 7 PNG diagnostic plots in recordings/<session>_analysis/
 ```
+
+</details>
 
 ---
 
